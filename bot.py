@@ -1,34 +1,34 @@
 import os
 import asyncio
-import aiohttp
-import sqlite3
 import discord
 
 from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 
-# =========================
+from db import (
+    add_player,
+    remove_player,
+    get_players,
+    log_admin,
+    get_admin_logs
+)
+
+from osrs_api import get_total_level
+
+# -------------------
 # LOAD ENV
-# =========================
+# -------------------
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-if not TOKEN:
-    raise ValueError("Missing DISCORD_TOKEN")
-if not GUILD_ID:
-    raise ValueError("Missing GUILD_ID")
+# -------------------
+# CONFIG
+# -------------------
+ADMIN_ROLE = "Clan Admin"
 
-# =========================
-# OSRS API
-# =========================
-HISCORES_URL = "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws?player="
-
-# =========================
-# ROLE TIERS
-# =========================
 ROLE_TIERS = {
     750: "Red Topaz Member",
     1000: "Sapphire Member",
@@ -40,37 +40,9 @@ ROLE_TIERS = {
     2277: "Zenyte Member",
 }
 
-# =========================
-# DATABASE
-# =========================
-conn = sqlite3.connect("clan.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS players (
-    discord_id INTEGER PRIMARY KEY,
-    rsn TEXT NOT NULL
-)
-""")
-conn.commit()
-
-
-def add_player(discord_id, rsn):
-    cursor.execute(
-        "INSERT OR REPLACE INTO players (discord_id, rsn) VALUES (?, ?)",
-        (discord_id, rsn),
-    )
-    conn.commit()
-
-
-def get_players():
-    cursor.execute("SELECT discord_id, rsn FROM players")
-    return cursor.fetchall()
-
-
-# =========================
-# DISCORD BOT SETUP
-# =========================
+# -------------------
+# BOT SETUP
+# -------------------
 intents = discord.Intents.default()
 intents.members = True
 
@@ -78,91 +50,133 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 
-# =========================
-# OSRS FETCH
-# =========================
-async def get_total_level(rsn: str):
-
-    url = HISCORES_URL + rsn.replace(" ", "%20")
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as r:
-
-                if r.status != 200:
-                    return None
-
-                data = await r.text()
-
-        return int(data.splitlines()[0].split(",")[1])
-
-    except:
-        return None
+# -------------------
+# ADMIN CHECK
+# -------------------
+def is_admin(member: discord.Member):
+    return any(r.name == ADMIN_ROLE for r in member.roles)
 
 
-# =========================
-# ROLE SYNC
-# =========================
+# -------------------
+# ROLE SYSTEM
+# -------------------
 async def sync_roles(member: discord.Member, level: int):
 
     guild = member.guild
-    earned_roles = []
+    earned = []
 
     for req, role_name in ROLE_TIERS.items():
 
         role = discord.utils.get(guild.roles, name=role_name)
 
         if role and level >= req:
-            earned_roles.append(role)
+            earned.append(role)
 
-    # remove old roles
     for role in member.roles:
-        if role.name in ROLE_TIERS.values() and role not in earned_roles:
+        if role.name in ROLE_TIERS.values() and role not in earned:
             await member.remove_roles(role)
 
-    # add new roles
-    for role in earned_roles:
+    for role in earned:
         if role not in member.roles:
             await member.add_roles(role)
 
 
-# =========================
-# SLASH COMMANDS
-# =========================
-
+# -------------------
+# REGISTER PLAYER
+# -------------------
 @tree.command(name="register", description="Link your OSRS account")
 async def register(interaction: discord.Interaction, rsn: str):
 
     add_player(interaction.user.id, rsn)
 
     await interaction.response.send_message(
-        f"✅ Linked **{rsn}** to {interaction.user.mention}",
+        f"✅ Linked {rsn}",
         ephemeral=True
     )
 
 
+# -------------------
+# STATS
+# -------------------
 @tree.command(name="stats", description="Check OSRS total level")
 async def stats(interaction: discord.Interaction, rsn: str):
 
     level = await get_total_level(rsn)
 
     if level is None:
-        await interaction.response.send_message("❌ Player not found.")
+        await interaction.response.send_message("Player not found.")
         return
 
-    embed = discord.Embed(
-        title=rsn,
-        description=f"🏆 Total Level: **{level}**",
-        color=discord.Color.green()
+    await interaction.response.send_message(
+        f"🏆 {rsn} total level: {level}"
     )
 
-    await interaction.response.send_message(embed=embed)
+
+# -------------------
+# ADD PLAYER (ADMIN)
+# -------------------
+@tree.command(name="addplayer", description="Admin: add player")
+async def addplayer(interaction: discord.Interaction, user: discord.Member, rsn: str):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Admin only", ephemeral=True)
+        return
+
+    add_player(user.id, rsn)
+    log_admin(interaction.user.id, "ADD_PLAYER", f"{user.id}:{rsn}")
+
+    await interaction.response.send_message("✅ Player added", ephemeral=True)
 
 
-@tree.command(name="sync", description="Force sync clan (admin)")
+# -------------------
+# REMOVE PLAYER (ADMIN)
+# -------------------
+@tree.command(name="removeplayer", description="Admin: remove player")
+async def removeplayer(interaction: discord.Interaction, user: discord.Member):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Admin only", ephemeral=True)
+        return
+
+    remove_player(user.id)
+    log_admin(interaction.user.id, "REMOVE_PLAYER", str(user.id))
+
+    await interaction.response.send_message("🗑️ Player removed", ephemeral=True)
+
+
+# -------------------
+# ADMIN LOGS
+# -------------------
+@tree.command(name="adminlog", description="View admin logs")
+async def adminlog(interaction: discord.Interaction):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Admin only", ephemeral=True)
+        return
+
+    logs = get_admin_logs()
+
+    text = "\n".join(
+        f"{t} | {a} | {x}"
+        for _, a, x, t in logs
+    )
+
+    await interaction.response.send_message(f"```{text}```", ephemeral=True)
+
+
+# -------------------
+# SYNC ALL (ADMIN)
+# -------------------
+@tree.command(name="sync", description="Force clan sync")
 async def sync(interaction: discord.Interaction):
 
-    await interaction.response.send_message("🔄 Syncing clan...")
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Admin only", ephemeral=True)
+        return
+
+    log_admin(interaction.user.id, "SYNC_CLAN")
+
+    await interaction.response.send_message("🔄 Syncing...")
 
     guild = interaction.guild
 
@@ -178,12 +192,14 @@ async def sync(interaction: discord.Interaction):
 
         await sync_roles(member, level)
 
+        await asyncio.sleep(1)
+
     await interaction.followup.send("✅ Sync complete")
 
 
-# =========================
-# BACKGROUND LOOP
-# =========================
+# -------------------
+# AUTO SYNC LOOP
+# -------------------
 @tasks.loop(minutes=30)
 async def auto_sync():
 
@@ -203,28 +219,22 @@ async def auto_sync():
 
         await sync_roles(member, level)
 
-        await asyncio.sleep(2)
 
-
-# =========================
-# ON READY
-# =========================
+# -------------------
+# READY EVENT
+# -------------------
 @bot.event
 async def on_ready():
 
     print(f"Logged in as {bot.user}")
 
-    try:
-        await tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("Slash commands synced")
-    except Exception as e:
-        print(f"Command sync failed: {e}")
+    await tree.sync(guild=discord.Object(id=GUILD_ID))
 
     if not auto_sync.is_running():
         auto_sync.start()
 
 
-# =========================
+# -------------------
 # RUN BOT
-# =========================
+# -------------------
 bot.run(TOKEN)
