@@ -449,8 +449,23 @@ async def removeplayer(ctx, member: discord.Member = None):
     await ctx.send(
         f"{member.name} removed from tracking."
     )
+
 # ==========================================
-# START BOT
+# START BOT WITH AUTO RESTART
 # ==========================================
 
-bot.run(DISCORD_TOKEN)
+import time
+
+while True:
+
+    try:
+
+        bot.run(DISCORD_TOKEN)
+
+    except Exception as e:
+
+        print(e)
+
+        print("Bot crashed. Restarting in 10 seconds...")
+
+        time.sleep(10)
