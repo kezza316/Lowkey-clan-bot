@@ -7,33 +7,33 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-# ==========================================
+# ==================================================
 # LOAD ENV VARIABLES
-# ==========================================
+# ==================================================
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-# ==========================================
+# ==================================================
 # DISCORD INTENTS
-# ==========================================
+# ==================================================
 intents = discord.Intents.default()
 
 intents.members = True
 intents.message_content = True
 
-# ==========================================
+# ==================================================
 # BOT SETUP
-# ==========================================
+# ==================================================
 bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
 
-# ==========================================
+# ==================================================
 # DATABASE
-# ==========================================
+# ==================================================
 conn = sqlite3.connect("clan.db")
 cursor = conn.cursor()
 
@@ -46,9 +46,9 @@ CREATE TABLE IF NOT EXISTS players (
 
 conn.commit()
 
-# ==========================================
+# ==================================================
 # ROLE TIERS
-# ==========================================
+# ==================================================
 ROLE_TIERS = {
     750: "Red Topaz Member",
     1000: "Sapphire Member",
@@ -60,22 +60,32 @@ ROLE_TIERS = {
     2277: "Zenyte Member",
 }
 
-# ==========================================
+# ==================================================
 # OSRS HISCORES API
-# ==========================================
+# ==================================================
 HISCORES_URL = (
     "https://secure.runescape.com/"
     "m=hiscore_oldschool/index_lite.ws?player="
 )
 
-# ==========================================
+# ==================================================
 # DATABASE FUNCTIONS
-# ==========================================
+# ==================================================
 def add_player(discord_id, rsn):
 
     cursor.execute(
         "INSERT OR REPLACE INTO players VALUES (?, ?)",
         (discord_id, rsn)
+    )
+
+    conn.commit()
+
+
+def remove_player(discord_id):
+
+    cursor.execute(
+        "DELETE FROM players WHERE discord_id = ?",
+        (discord_id,)
     )
 
     conn.commit()
@@ -89,9 +99,19 @@ def get_players():
 
     return cursor.fetchall()
 
-# ==========================================
+
+def get_player(discord_id):
+
+    cursor.execute(
+        "SELECT rsn FROM players WHERE discord_id = ?",
+        (discord_id,)
+    )
+
+    return cursor.fetchone()
+
+# ==================================================
 # GET TOTAL LEVEL
-# ==========================================
+# ==================================================
 async def get_total_level(rsn):
 
     url = HISCORES_URL + rsn.replace(" ", "%20")
@@ -119,9 +139,9 @@ async def get_total_level(rsn):
 
         return None
 
-# ==========================================
+# ==================================================
 # ROLE SYNC SYSTEM
-# ==========================================
+# ==================================================
 async def sync_roles(member, total_level):
 
     earned_roles = []
@@ -146,16 +166,16 @@ async def sync_roles(member, total_level):
 
             await member.remove_roles(role)
 
-    # Add new roles
+    # Add earned roles
     for role in earned_roles:
 
         if role not in member.roles:
 
             await member.add_roles(role)
 
-# ==========================================
+# ==================================================
 # BOT READY
-# ==========================================
+# ==================================================
 @bot.event
 async def on_ready():
 
@@ -166,9 +186,13 @@ async def on_ready():
     if not auto_sync.is_running():
         auto_sync.start()
 
-# ==========================================
+# ==================================================
+# USER COMMANDS
+# ==================================================
+
+# --------------------------------
 # !register
-# ==========================================
+# --------------------------------
 @bot.command()
 async def register(ctx, *, rsn):
 
@@ -178,9 +202,9 @@ async def register(ctx, *, rsn):
         f"✅ Registered RSN: {rsn}"
     )
 
-# ==========================================
+# --------------------------------
 # !stats
-# ==========================================
+# --------------------------------
 @bot.command()
 async def stats(ctx, *, rsn):
 
@@ -202,15 +226,17 @@ async def stats(ctx, *, rsn):
 
     await ctx.send(embed=embed)
 
-# ==========================================
+# --------------------------------
 # !leaderboard
-# ==========================================
+# --------------------------------
 @bot.command()
 async def leaderboard(ctx):
 
     leaderboard_data = []
 
-    await ctx.send("📊 Building leaderboard...")
+    await ctx.send(
+        "📊 Building leaderboard..."
+    )
 
     for discord_id, rsn in get_players():
 
@@ -256,40 +282,236 @@ async def leaderboard(ctx):
 
     await ctx.send(embed=embed)
 
-# ==========================================
+# ==================================================
+# ADMIN COMMANDS
+# ==================================================
+
+# --------------------------------
+# !forceadd
+# --------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def forceadd(ctx, member: discord.Member, *, rsn):
+
+    add_player(member.id, rsn)
+
+    level = await get_total_level(rsn)
+
+    if level is None:
+
+        await ctx.send(
+            "❌ Could not find OSRS account."
+        )
+
+        return
+
+    await sync_roles(member, level)
+
+    await ctx.send(
+        f"✅ Added {member.mention}\n"
+        f"RSN: **{rsn}**\n"
+        f"🏆 Total Level: {level}"
+    )
+
+# --------------------------------
+# !forceremove
+# --------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def forceremove(ctx, member: discord.Member):
+
+    remove_player(member.id)
+
+    await ctx.send(
+        f"✅ Removed {member.mention} "
+        f"from tracking."
+    )
+
+# --------------------------------
+# !setrsn
+# --------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setrsn(ctx, member: discord.Member, *, rsn):
+
+    add_player(member.id, rsn)
+
+    await ctx.send(
+        f"✅ Updated {member.mention}\n"
+        f"New RSN: **{rsn}**"
+    )
+
+# --------------------------------
+# !forcesync
+# --------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def forcesync(ctx, member: discord.Member):
+
+    player = get_player(member.id)
+
+    if not player:
+
+        await ctx.send(
+            "❌ Member is not registered."
+        )
+
+        return
+
+    rsn = player[0]
+
+    level = await get_total_level(rsn)
+
+    if level is None:
+
+        await ctx.send(
+            "❌ Could not fetch OSRS stats."
+        )
+
+        return
+
+    await sync_roles(member, level)
+
+    await ctx.send(
+        f"✅ Synced {member.mention}\n"
+        f"🏆 Total Level: {level}"
+    )
+
+# --------------------------------
+# !tracked
+# --------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def tracked(ctx):
+
+    players = get_players()
+
+    if not players:
+
+        await ctx.send(
+            "No tracked players."
+        )
+
+        return
+
+    description = ""
+
+    for discord_id, rsn in players:
+
+        member = ctx.guild.get_member(discord_id)
+
+        if member:
+
+            description += (
+                f"{member.mention} → "
+                f"**{rsn}**\n"
+            )
+
+    embed = discord.Embed(
+        title="📋 Tracked Players",
+        description=description,
+        color=discord.Color.blue()
+    )
+
+    await ctx.send(embed=embed)
+
+# --------------------------------
 # !sync
-# ==========================================
+# --------------------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def sync(ctx):
 
-    await ctx.send("🔄 Syncing clan...")
+    await ctx.send(
+        "🔄 Starting full clan sync..."
+    )
 
     guild = bot.get_guild(GUILD_ID)
 
-    for discord_id, rsn in get_players():
+    if not guild:
+
+        await ctx.send(
+            "❌ Guild not found."
+        )
+
+        return
+
+    players = get_players()
+
+    if not players:
+
+        await ctx.send(
+            "❌ No registered players."
+        )
+
+        return
+
+    synced_count = 0
+    failed_count = 0
+
+    for discord_id, rsn in players:
 
         member = guild.get_member(discord_id)
 
         if not member:
+
+            failed_count += 1
             continue
 
         level = await get_total_level(rsn)
 
         if level is None:
+
+            failed_count += 1
             continue
 
-        await sync_roles(member, level)
+        try:
+
+            await sync_roles(member, level)
+
+            synced_count += 1
+
+            print(
+                f"Synced {member.name} "
+                f"({rsn}) -> {level}"
+            )
+
+        except Exception as e:
+
+            print(f"Sync Error: {e}")
+
+            failed_count += 1
 
         await asyncio.sleep(1)
 
-    await ctx.send(
-        "✅ Clan sync complete"
+    embed = discord.Embed(
+        title="✅ Clan Sync Complete",
+        color=discord.Color.green()
     )
 
-# ==========================================
-# AUTO ROLE SYNC LOOP
-# ==========================================
+    embed.add_field(
+        name="Successful Syncs",
+        value=synced_count,
+        inline=True
+    )
+
+    embed.add_field(
+        name="Failed",
+        value=failed_count,
+        inline=True
+    )
+
+    embed.add_field(
+        name="Total Players",
+        value=len(players),
+        inline=True
+    )
+
+    await ctx.send(embed=embed)
+
+# ==================================================
+# AUTO SYNC LOOP
+# ==================================================
 @tasks.loop(minutes=30)
 async def auto_sync():
 
@@ -314,7 +536,23 @@ async def auto_sync():
 
         await asyncio.sleep(1)
 
-# ==========================================
+# ==================================================
+# ERROR HANDLER
+# ==================================================
+@bot.event
+async def on_command_error(ctx, error):
+
+    if isinstance(
+        error,
+        commands.MissingPermissions
+    ):
+
+        await ctx.send(
+            "❌ You do not have permission "
+            "to use this command."
+        )
+
+# ==================================================
 # RUN BOT
-# ==========================================
+# ==================================================
 bot.run(TOKEN)
