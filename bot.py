@@ -50,7 +50,6 @@ conn.commit()
 # ROLE TIERS
 # ==================================================
 ROLE_TIERS = {
-    750: "Red Topaz Member",
     1000: "Sapphire Member",
     1500: "Emerald Member",
     1750: "Ruby Member",
