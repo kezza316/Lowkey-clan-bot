@@ -34,7 +34,7 @@ bot = commands.Bot(
 # ==================================================
 # DATABASE
 # ==================================================
-conn = sqlite3.connect("clan.db")
+conn = sqlite3.connect("/data/clan.db")
 cursor = conn.cursor()
 
 cursor.execute("""
