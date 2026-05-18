@@ -5,36 +5,35 @@ import aiohttp
 import discord
 
 from discord.ext import commands, tasks
-from discord import app_commands
 from dotenv import load_dotenv
 
-# ==================================================
+# ==========================================
 # LOAD ENV VARIABLES
-# ==================================================
+# ==========================================
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-# ==================================================
+# ==========================================
 # DISCORD INTENTS
-# ==================================================
+# ==========================================
 intents = discord.Intents.default()
-intents.members = True
 
-# ==================================================
+intents.members = True
+intents.message_content = True
+
+# ==========================================
 # BOT SETUP
-# ==================================================
+# ==========================================
 bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
 
-tree = bot.tree
-
-# ==================================================
+# ==========================================
 # DATABASE
-# ==================================================
+# ==========================================
 conn = sqlite3.connect("clan.db")
 cursor = conn.cursor()
 
@@ -47,9 +46,9 @@ CREATE TABLE IF NOT EXISTS players (
 
 conn.commit()
 
-# ==================================================
+# ==========================================
 # ROLE TIERS
-# ==================================================
+# ==========================================
 ROLE_TIERS = {
     750: "Red Topaz Member",
     1000: "Sapphire Member",
@@ -61,17 +60,17 @@ ROLE_TIERS = {
     2277: "Zenyte Member",
 }
 
-# ==================================================
+# ==========================================
 # OSRS HISCORES API
-# ==================================================
+# ==========================================
 HISCORES_URL = (
     "https://secure.runescape.com/"
     "m=hiscore_oldschool/index_lite.ws?player="
 )
 
-# ==================================================
+# ==========================================
 # DATABASE FUNCTIONS
-# ==================================================
+# ==========================================
 def add_player(discord_id, rsn):
 
     cursor.execute(
@@ -90,9 +89,9 @@ def get_players():
 
     return cursor.fetchall()
 
-# ==================================================
-# FETCH TOTAL LEVEL
-# ==================================================
+# ==========================================
+# GET TOTAL LEVEL
+# ==========================================
 async def get_total_level(rsn):
 
     url = HISCORES_URL + rsn.replace(" ", "%20")
@@ -120,9 +119,9 @@ async def get_total_level(rsn):
 
         return None
 
-# ==================================================
+# ==========================================
 # ROLE SYNC SYSTEM
-# ==================================================
+# ==========================================
 async def sync_roles(member, total_level):
 
     earned_roles = []
@@ -147,103 +146,71 @@ async def sync_roles(member, total_level):
 
             await member.remove_roles(role)
 
-    # Add earned roles
+    # Add new roles
     for role in earned_roles:
 
         if role not in member.roles:
 
             await member.add_roles(role)
 
-# ==================================================
-# SLASH COMMANDS
-# ==================================================
+# ==========================================
+# BOT READY
+# ==========================================
+@bot.event
+async def on_ready():
 
-# ------------------------------
-# /test
-# ------------------------------
-@tree.command(
-    name="test",
-    description="Test slash commands"
-)
-async def test(
-    interaction: discord.Interaction
-):
+    print("============================")
+    print(f"✅ Logged in as {bot.user}")
+    print("============================")
 
-    await interaction.response.send_message(
-        "✅ Slash commands are working!"
+    if not auto_sync.is_running():
+        auto_sync.start()
+
+# ==========================================
+# !register
+# ==========================================
+@bot.command()
+async def register(ctx, *, rsn):
+
+    add_player(ctx.author.id, rsn)
+
+    await ctx.send(
+        f"✅ Registered RSN: {rsn}"
     )
 
-# ------------------------------
-# /register
-# ------------------------------
-@tree.command(
-    name="register",
-    description="Register your OSRS account"
-)
-@app_commands.describe(
-    rsn="Your OSRS username"
-)
-async def register(
-    interaction: discord.Interaction,
-    rsn: str
-):
-
-    add_player(interaction.user.id, rsn)
-
-    await interaction.response.send_message(
-        f"✅ Registered RSN: {rsn}",
-        ephemeral=True
-    )
-
-# ------------------------------
-# /stats
-# ------------------------------
-@tree.command(
-    name="stats",
-    description="Check OSRS total level"
-)
-@app_commands.describe(
-    rsn="OSRS username"
-)
-async def stats(
-    interaction: discord.Interaction,
-    rsn: str
-):
-
-    await interaction.response.defer()
+# ==========================================
+# !stats
+# ==========================================
+@bot.command()
+async def stats(ctx, *, rsn):
 
     level = await get_total_level(rsn)
 
     if level is None:
 
-        await interaction.followup.send(
+        await ctx.send(
             "❌ Player not found"
         )
 
         return
 
     embed = discord.Embed(
-        title=f"{rsn}",
+        title=rsn,
         description=f"🏆 Total Level: {level}",
         color=discord.Color.green()
     )
 
-    await interaction.followup.send(embed=embed)
+    await ctx.send(embed=embed)
 
-# ------------------------------
-# /leaderboard
-# ------------------------------
-@tree.command(
-    name="leaderboard",
-    description="View clan leaderboard"
-)
-async def leaderboard(
-    interaction: discord.Interaction
-):
-
-    await interaction.response.defer()
+# ==========================================
+# !leaderboard
+# ==========================================
+@bot.command()
+async def leaderboard(ctx):
 
     leaderboard_data = []
+
+    await ctx.send("📊 Building leaderboard...")
 
     for discord_id, rsn in get_players():
 
@@ -263,7 +230,7 @@ async def leaderboard(
 
     if not leaderboard_data:
 
-        await interaction.followup.send(
+        await ctx.send(
             "No registered players."
         )
 
@@ -287,34 +254,18 @@ async def leaderboard(
         color=discord.Color.gold()
     )
 
-    await interaction.followup.send(embed=embed)
+    await ctx.send(embed=embed)
 
-# ------------------------------
-# /sync
-# ------------------------------
-@tree.command(
-    name="sync",
-    description="Admin: Sync all clan roles"
-)
-async def sync(
-    interaction: discord.Interaction
-):
+# ==========================================
+# !sync
+# ==========================================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sync(ctx):
 
-    # Discord admins only
-    if not interaction.user.guild_permissions.administrator:
+    await ctx.send("🔄 Syncing clan...")
 
-        await interaction.response.send_message(
-            "❌ Admin only",
-            ephemeral=True
-        )
-
-        return
-
-    await interaction.response.send_message(
-        "🔄 Syncing clan..."
-    )
-
-    guild = interaction.guild
+    guild = bot.get_guild(GUILD_ID)
 
     for discord_id, rsn in get_players():
 
@@ -332,13 +283,13 @@ async def sync(
 
         await asyncio.sleep(1)
 
-    await interaction.followup.send(
+    await ctx.send(
         "✅ Clan sync complete"
     )
 
-# ==================================================
+# ==========================================
 # AUTO ROLE SYNC LOOP
-# ==================================================
+# ==========================================
 @tasks.loop(minutes=30)
 async def auto_sync():
 
@@ -363,42 +314,7 @@ async def auto_sync():
 
         await asyncio.sleep(1)
 
-# ==================================================
-# BOT READY EVENT
-# ==================================================
-@bot.event
-async def on_ready():
-
-    print("===================================")
-    print(f"✅ Logged in as {bot.user}")
-    print(f"✅ Guild ID: {GUILD_ID}")
-
-    try:
-
-        guild = discord.Object(id=GUILD_ID)
-
-        synced = await tree.sync(
-            guild=guild
-        )
-
-        print(
-            f"✅ Synced {len(synced)} command(s)"
-        )
-
-        for command in synced:
-            print(f"/{command.name}")
-
-    except Exception as e:
-
-        print(f"❌ Slash sync failed: {e}")
-
-    print("===================================")
-
-    # Start auto sync loop
-    if not auto_sync.is_running():
-        auto_sync.start()
-
-# ==================================================
+# ==========================================
 # RUN BOT
-# ==================================================
+# ==========================================
 bot.run(TOKEN)
