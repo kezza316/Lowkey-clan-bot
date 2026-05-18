@@ -141,37 +141,43 @@ async def get_total_level(rsn):
 
 # ==================================================
 # ROLE SYNC SYSTEM
+# Highest role only
 # ==================================================
 async def sync_roles(member, total_level):
 
-    earned_roles = []
+    highest_role = None
+    highest_requirement = 0
 
+    # Find highest role earned
     for required_level, role_name in ROLE_TIERS.items():
 
-        role = discord.utils.get(
-            member.guild.roles,
-            name=role_name
-        )
+        if total_level >= required_level:
 
-        if role and total_level >= required_level:
-            earned_roles.append(role)
+            if required_level > highest_requirement:
 
-    # Remove old roles
+                highest_requirement = required_level
+
+                highest_role = discord.utils.get(
+                    member.guild.roles,
+                    name=role_name
+                )
+
+    # Remove ALL progression roles
     for role in member.roles:
 
-        if (
-            role.name in ROLE_TIERS.values()
-            and role not in earned_roles
-        ):
+        if role.name in ROLE_TIERS.values():
 
             await member.remove_roles(role)
 
-    # Add earned roles
-    for role in earned_roles:
+    # Add highest role only
+    if highest_role:
 
-        if role not in member.roles:
+        await member.add_roles(highest_role)
 
-            await member.add_roles(role)
+        print(
+            f"Assigned {highest_role.name} "
+            f"to {member.name}"
+        )
 
 # ==================================================
 # BOT READY
