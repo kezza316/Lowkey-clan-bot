@@ -8,20 +8,23 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 
-# ==============================
-# LOAD ENV
-# ==============================
+# ==================================================
+# LOAD ENV VARIABLES
+# ==================================================
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
-# ==============================
-# BOT SETUP
-# ==============================
+# ==================================================
+# DISCORD INTENTS
+# ==================================================
 intents = discord.Intents.default()
 intents.members = True
 
+# ==================================================
+# BOT SETUP
+# ==================================================
 bot = commands.Bot(
     command_prefix="!",
     intents=intents
@@ -29,9 +32,9 @@ bot = commands.Bot(
 
 tree = bot.tree
 
-# ==============================
+# ==================================================
 # DATABASE
-# ==============================
+# ==================================================
 conn = sqlite3.connect("clan.db")
 cursor = conn.cursor()
 
@@ -44,10 +47,11 @@ CREATE TABLE IF NOT EXISTS players (
 
 conn.commit()
 
-# ==============================
+# ==================================================
 # ROLE TIERS
-# ==============================
+# ==================================================
 ROLE_TIERS = {
+    750: "Red Topaz Member",
     1000: "Sapphire Member",
     1500: "Emerald Member",
     1750: "Ruby Member",
@@ -57,17 +61,17 @@ ROLE_TIERS = {
     2277: "Zenyte Member",
 }
 
-# ==============================
-# OSRS API
-# ==============================
+# ==================================================
+# OSRS HISCORES API
+# ==================================================
 HISCORES_URL = (
     "https://secure.runescape.com/"
     "m=hiscore_oldschool/index_lite.ws?player="
 )
 
-# ==============================
+# ==================================================
 # DATABASE FUNCTIONS
-# ==============================
+# ==================================================
 def add_player(discord_id, rsn):
 
     cursor.execute(
@@ -80,19 +84,23 @@ def add_player(discord_id, rsn):
 
 def get_players():
 
-    cursor.execute("SELECT discord_id, rsn FROM players")
+    cursor.execute(
+        "SELECT discord_id, rsn FROM players"
+    )
 
     return cursor.fetchall()
 
-# ==============================
-# GET TOTAL LEVEL
-# ==============================
+# ==================================================
+# FETCH TOTAL LEVEL
+# ==================================================
 async def get_total_level(rsn):
 
     url = HISCORES_URL + rsn.replace(" ", "%20")
 
     try:
+
         async with aiohttp.ClientSession() as session:
+
             async with session.get(url) as response:
 
                 if response.status != 200:
@@ -106,8 +114,12 @@ async def get_total_level(rsn):
 
         return int(level)
 
-    except:
+    except Exception as e:
+
+        print(f"OSRS API Error: {e}")
+
         return None
+
 # ==================================================
 # ROLE SYNC SYSTEM
 # ==================================================
@@ -125,7 +137,7 @@ async def sync_roles(member, total_level):
         if role and total_level >= required_level:
             earned_roles.append(role)
 
-    # Remove old progression roles
+    # Remove old roles
     for role in member.roles:
 
         if (
@@ -143,14 +155,33 @@ async def sync_roles(member, total_level):
             await member.add_roles(role)
 
 # ==================================================
-# /register
+# SLASH COMMANDS
 # ==================================================
+
+# ------------------------------
+# /test
+# ------------------------------
+@tree.command(
+    name="test",
+    description="Test slash commands"
+)
+async def test(
+    interaction: discord.Interaction
+):
+
+    await interaction.response.send_message(
+        "✅ Slash commands are working!"
+    )
+
+# ------------------------------
+# /register
+# ------------------------------
 @tree.command(
     name="register",
     description="Register your OSRS account"
 )
 @app_commands.describe(
-    rsn="Your Old School RuneScape username"
+    rsn="Your OSRS username"
 )
 async def register(
     interaction: discord.Interaction,
@@ -164,9 +195,9 @@ async def register(
         ephemeral=True
     )
 
-# ==================================================
+# ------------------------------
 # /stats
-# ==================================================
+# ------------------------------
 @tree.command(
     name="stats",
     description="Check OSRS total level"
@@ -199,9 +230,9 @@ async def stats(
 
     await interaction.followup.send(embed=embed)
 
-# ==================================================
+# ------------------------------
 # /leaderboard
-# ==================================================
+# ------------------------------
 @tree.command(
     name="leaderboard",
     description="View clan leaderboard"
@@ -233,7 +264,7 @@ async def leaderboard(
     if not leaderboard_data:
 
         await interaction.followup.send(
-            "No players found."
+            "No registered players."
         )
 
         return
@@ -258,12 +289,12 @@ async def leaderboard(
 
     await interaction.followup.send(embed=embed)
 
-# ==================================================
+# ------------------------------
 # /sync
-# ==================================================
+# ------------------------------
 @tree.command(
     name="sync",
-    description="Admin: Sync all player roles"
+    description="Admin: Sync all clan roles"
 )
 async def sync(
     interaction: discord.Interaction
@@ -306,7 +337,7 @@ async def sync(
     )
 
 # ==================================================
-# AUTO SYNC LOOP
+# AUTO ROLE SYNC LOOP
 # ==================================================
 @tasks.loop(minutes=30)
 async def auto_sync():
@@ -338,27 +369,30 @@ async def auto_sync():
 @bot.event
 async def on_ready():
 
+    print("===================================")
     print(f"✅ Logged in as {bot.user}")
+    print(f"✅ Guild ID: {GUILD_ID}")
 
     try:
 
         guild = discord.Object(id=GUILD_ID)
 
-        # Clears old cached commands
-        bot.tree.clear_commands(guild=guild)
-
-        # Sync slash commands
-        synced = await bot.tree.sync(
+        synced = await tree.sync(
             guild=guild
         )
 
         print(
-            f"✅ Synced {len(synced)} slash command(s)"
+            f"✅ Synced {len(synced)} command(s)"
         )
+
+        for command in synced:
+            print(f"/{command.name}")
 
     except Exception as e:
 
         print(f"❌ Slash sync failed: {e}")
+
+    print("===================================")
 
     # Start auto sync loop
     if not auto_sync.is_running():
@@ -367,6 +401,4 @@ async def on_ready():
 # ==================================================
 # RUN BOT
 # ==================================================
-bot.run(TOKEN)
-# ==============================
 bot.run(TOKEN)
