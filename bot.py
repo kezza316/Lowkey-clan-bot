@@ -85,9 +85,8 @@ def get_players():
 
     return cursor.fetchall()
 
-
 # ==============================
-# GET OSRS TOTAL LEVEL
+# GET TOTAL LEVEL
 # ==============================
 async def get_total_level(rsn):
 
@@ -111,7 +110,6 @@ async def get_total_level(rsn):
     except:
         return None
 
-
 # ==============================
 # ROLE SYNC
 # ==============================
@@ -129,7 +127,7 @@ async def sync_roles(member, total_level):
         if role and total_level >= required_level:
             earned_roles.append(role)
 
-    # Remove old progression roles
+    # Remove old roles
     for role in member.roles:
 
         if (
@@ -180,15 +178,74 @@ async def stats(
     level = await get_total_level(rsn)
 
     if level is None:
+
         await interaction.followup.send(
             "❌ Player not found"
         )
+
         return
 
     embed = discord.Embed(
         title=rsn,
         description=f"🏆 Total Level: {level}",
         color=discord.Color.green()
+    )
+
+    await interaction.followup.send(embed=embed)
+
+# ==============================
+# /leaderboard
+# ==============================
+@tree.command(
+    name="leaderboard",
+    description="View clan total level leaderboard"
+)
+async def leaderboard(
+    interaction: discord.Interaction
+):
+
+    await interaction.response.defer()
+
+    leaderboard_data = []
+
+    for discord_id, rsn in get_players():
+
+        level = await get_total_level(rsn)
+
+        if level is None:
+            continue
+
+        leaderboard_data.append((rsn, level))
+
+        await asyncio.sleep(1)
+
+    # Sort highest first
+    leaderboard_data.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    if not leaderboard_data:
+
+        await interaction.followup.send(
+            "No players found."
+        )
+
+        return
+
+    description = ""
+
+    for index, (rsn, level) in enumerate(leaderboard_data[:10], start=1):
+
+        description += (
+            f"**#{index}** - {rsn} → "
+            f"🏆 {level}\n"
+        )
+
+    embed = discord.Embed(
+        title="🏆 Clan Leaderboard",
+        description=description,
+        color=discord.Color.gold()
     )
 
     await interaction.followup.send(embed=embed)
@@ -204,7 +261,6 @@ async def sync(
     interaction: discord.Interaction
 ):
 
-    # Discord admin only
     if not interaction.user.guild_permissions.administrator:
 
         await interaction.response.send_message(
@@ -241,7 +297,7 @@ async def sync(
     )
 
 # ==============================
-# AUTO SYNC LOOP
+# AUTO SYNC
 # ==============================
 @tasks.loop(minutes=30)
 async def auto_sync():
@@ -268,7 +324,7 @@ async def auto_sync():
         await asyncio.sleep(1)
 
 # ==============================
-# BOT READY
+# READY EVENT
 # ==============================
 @bot.event
 async def on_ready():
