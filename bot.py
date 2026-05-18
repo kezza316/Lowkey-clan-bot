@@ -48,7 +48,6 @@ conn.commit()
 # ROLE TIERS
 # ==============================
 ROLE_TIERS = {
-    750: "Red Topaz Member",
     1000: "Sapphire Member",
     1500: "Emerald Member",
     1750: "Ruby Member",
@@ -109,10 +108,9 @@ async def get_total_level(rsn):
 
     except:
         return None
-
-# ==============================
-# ROLE SYNC
-# ==============================
+# ==================================================
+# ROLE SYNC SYSTEM
+# ==================================================
 async def sync_roles(member, total_level):
 
     earned_roles = []
@@ -127,27 +125,32 @@ async def sync_roles(member, total_level):
         if role and total_level >= required_level:
             earned_roles.append(role)
 
-    # Remove old roles
+    # Remove old progression roles
     for role in member.roles:
 
         if (
             role.name in ROLE_TIERS.values()
             and role not in earned_roles
         ):
+
             await member.remove_roles(role)
 
     # Add earned roles
     for role in earned_roles:
 
         if role not in member.roles:
+
             await member.add_roles(role)
 
-# ==============================
+# ==================================================
 # /register
-# ==============================
+# ==================================================
 @tree.command(
     name="register",
     description="Register your OSRS account"
+)
+@app_commands.describe(
+    rsn="Your Old School RuneScape username"
 )
 async def register(
     interaction: discord.Interaction,
@@ -161,12 +164,15 @@ async def register(
         ephemeral=True
     )
 
-# ==============================
+# ==================================================
 # /stats
-# ==============================
+# ==================================================
 @tree.command(
     name="stats",
     description="Check OSRS total level"
+)
+@app_commands.describe(
+    rsn="OSRS username"
 )
 async def stats(
     interaction: discord.Interaction,
@@ -186,19 +192,19 @@ async def stats(
         return
 
     embed = discord.Embed(
-        title=rsn,
+        title=f"{rsn}",
         description=f"🏆 Total Level: {level}",
         color=discord.Color.green()
     )
 
     await interaction.followup.send(embed=embed)
 
-# ==============================
+# ==================================================
 # /leaderboard
-# ==============================
+# ==================================================
 @tree.command(
     name="leaderboard",
-    description="View clan total level leaderboard"
+    description="View clan leaderboard"
 )
 async def leaderboard(
     interaction: discord.Interaction
@@ -219,7 +225,6 @@ async def leaderboard(
 
         await asyncio.sleep(1)
 
-    # Sort highest first
     leaderboard_data.sort(
         key=lambda x: x[1],
         reverse=True
@@ -235,11 +240,14 @@ async def leaderboard(
 
     description = ""
 
-    for index, (rsn, level) in enumerate(leaderboard_data[:10], start=1):
+    for index, (rsn, level) in enumerate(
+        leaderboard_data[:10],
+        start=1
+    ):
 
         description += (
-            f"**#{index}** - {rsn} → "
-            f"🏆 {level}\n"
+            f"**#{index}** • "
+            f"{rsn} → 🏆 {level}\n"
         )
 
     embed = discord.Embed(
@@ -250,17 +258,18 @@ async def leaderboard(
 
     await interaction.followup.send(embed=embed)
 
-# ==============================
+# ==================================================
 # /sync
-# ==============================
+# ==================================================
 @tree.command(
     name="sync",
-    description="Sync all player roles"
+    description="Admin: Sync all player roles"
 )
 async def sync(
     interaction: discord.Interaction
 ):
 
+    # Discord admins only
     if not interaction.user.guild_permissions.administrator:
 
         await interaction.response.send_message(
@@ -296,9 +305,9 @@ async def sync(
         "✅ Clan sync complete"
     )
 
-# ==============================
-# AUTO SYNC
-# ==============================
+# ==================================================
+# AUTO SYNC LOOP
+# ==================================================
 @tasks.loop(minutes=30)
 async def auto_sync():
 
@@ -323,9 +332,9 @@ async def auto_sync():
 
         await asyncio.sleep(1)
 
-# ==============================
-# READY EVENT
-# ==============================
+# ==================================================
+# BOT READY EVENT
+# ==================================================
 @bot.event
 async def on_ready():
 
@@ -335,18 +344,29 @@ async def on_ready():
 
         guild = discord.Object(id=GUILD_ID)
 
-        synced = await tree.sync(guild=guild)
+        # Clears old cached commands
+        bot.tree.clear_commands(guild=guild)
 
-        print(f"✅ Synced {len(synced)} commands")
+        # Sync slash commands
+        synced = await bot.tree.sync(
+            guild=guild
+        )
+
+        print(
+            f"✅ Synced {len(synced)} slash command(s)"
+        )
 
     except Exception as e:
 
-        print(f"❌ Sync failed: {e}")
+        print(f"❌ Slash sync failed: {e}")
 
+    # Start auto sync loop
     if not auto_sync.is_running():
         auto_sync.start()
 
-# ==============================
+# ==================================================
 # RUN BOT
+# ==================================================
+bot.run(TOKEN)
 # ==============================
 bot.run(TOKEN)
