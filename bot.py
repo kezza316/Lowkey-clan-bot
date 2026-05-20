@@ -141,13 +141,14 @@ async def get_total_level(rsn):
 # ==================================================
 # ROLE SYNC SYSTEM
 # Highest role only
+# Anti audit-log spam version
 # ==================================================
 async def sync_roles(member, total_level):
 
     highest_role = None
     highest_requirement = 0
 
-    # Find highest role earned
+    # Find highest eligible role
     for required_level, role_name in ROLE_TIERS.items():
 
         if total_level >= required_level:
@@ -161,21 +162,36 @@ async def sync_roles(member, total_level):
                     name=role_name
                 )
 
-    # Remove ALL progression roles
-    for role in member.roles:
+    # Current progression roles user has
+    current_roles = [
+        role for role in member.roles
+        if role.name in ROLE_TIERS.values()
+    ]
 
-        if role.name in ROLE_TIERS.values():
+    # If already has correct role ONLY
+    if (
+        highest_role
+        and len(current_roles) == 1
+        and current_roles[0] == highest_role
+    ):
+
+        return
+
+    # Remove incorrect progression roles
+    for role in current_roles:
+
+        if role != highest_role:
 
             await member.remove_roles(role)
 
-    # Add highest role only
-    if highest_role:
+    # Add highest role if missing
+    if highest_role and highest_role not in member.roles:
 
         await member.add_roles(highest_role)
 
         print(
-            f"Assigned {highest_role.name} "
-            f"to {member.name}"
+            f"Updated {member.name} "
+            f"-> {highest_role.name}"
         )
 
 # ==================================================
