@@ -193,7 +193,6 @@ async def sync_roles(member, total_level):
             f"Updated {member.name} "
             f"-> {highest_role.name}"
         )
-
 # ==================================================
 # BOT READY
 # ==================================================
