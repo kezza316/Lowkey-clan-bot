@@ -1,3 +1,8 @@
-discord.py
-aiohttp
-python-dotenv
+DISCORD_TOKEN=replace_me
+COMMAND_PREFIX=!
+DATABASE_PATH=osrs_bot.sqlite3
+LOG_LEVEL=INFO
+
+# Highest-role-only progression roles, sorted automatically by required total level.
+# Format: role_id:min_total_level,role_id:min_total_level
+PROGRESSION_ROLES=111111111111111111:1000,222222222222222222:1500,333333333333333333:2000
