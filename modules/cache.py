@@ -45,8 +45,32 @@ class StatsCache:
         await self.db.upsert_stats(player.discord_id, player.guild_id, player.rsn, data)
 
         member = guild.get_member(discord_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(discord_id)
+            except discord.NotFound:
+                LOGGER.info("Stats synced for %s, but the member is no longer in guild %s.", player.rsn, guild.id)
+            except discord.Forbidden:
+                LOGGER.warning(
+                    "Stats synced for %s, but Discord would not let the bot fetch the member. "
+                    "Enable the Server Members Intent in the Discord Developer Portal.",
+                    player.rsn,
+                )
+            except discord.HTTPException:
+                LOGGER.exception("Stats synced for %s, but fetching the Discord member failed.", player.rsn)
+
         if member and self._roles:
-            await self._roles.apply_highest_progression_role(member, data)
+            try:
+                await self._roles.apply_highest_progression_role(member, data)
+            except discord.Forbidden:
+                LOGGER.warning(
+                    "Stats synced for %s, but role update failed in guild %s. "
+                    "Check Manage Roles permission and role hierarchy.",
+                    player.rsn,
+                    guild.id,
+                )
+            except discord.HTTPException:
+                LOGGER.exception("Stats synced for %s, but Discord role update failed.", player.rsn)
         return data
 
     async def refresh_guild(self, guild: discord.Guild) -> tuple[int, int]:

@@ -166,7 +166,10 @@ class HiscoresClient:
     async def __aenter__(self) -> "HiscoresClient":
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=20)
-            self.session = aiohttp.ClientSession(timeout=timeout)
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                headers={"User-Agent": "OSRS-Discord-Bot/1.0"},
+            )
         return self
 
     async def __aexit__(self, *_: object) -> None:
