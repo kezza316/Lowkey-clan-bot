@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord.ext import commands
 
@@ -15,6 +17,9 @@ from modules.leaderboards import (
     total_level,
 )
 from modules.roles import RoleManager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OSRSCommands(commands.Cog):
@@ -44,11 +49,28 @@ class OSRSCommands(commands.Cog):
 
     @commands.command(name="stats")
     @commands.guild_only()
-    async def stats(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
-        member = member or ctx.author
+    async def stats(self, ctx: commands.Context, *, target: str | None = None) -> None:
+        member = ctx.author
+        if target:
+            converter = commands.MemberConverter()
+            try:
+                member = await converter.convert(ctx, target)
+            except commands.BadArgument:
+                await ctx.reply(
+                    embed=_error_embed(
+                        "`!stats` shows Discord-linked players. Use `!register your_rsn` first, "
+                        "then run `!stats`, or use `!stats @member`."
+                    ),
+                    mention_author=False,
+                )
+                return
+
         player = await self.db.get_player(member.id, ctx.guild.id)
         if not player:
-            await ctx.reply(embed=_error_embed("That member is not registered."), mention_author=False)
+            message = "You are not registered yet. Use `!register your_rsn` first."
+            if member.id != ctx.author.id:
+                message = "That member is not registered yet."
+            await ctx.reply(embed=_error_embed(message), mention_author=False)
             return
 
         data = await self.db.get_stats(member.id, ctx.guild.id)
@@ -166,13 +188,29 @@ class OSRSCommands(commands.Cog):
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        if ctx.command and ctx.command.has_error_handler():
+            return
+
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply(embed=_error_embed("You need Manage Server permission for that command."), mention_author=False)
+            return
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(embed=_error_embed(f"Missing argument: `{error.param.name}`"), mention_author=False)
             return
         if isinstance(error, commands.BadArgument):
             await ctx.reply(embed=_error_embed("I could not understand that argument."), mention_author=False)
             return
-        raise error
+
+        original = getattr(error, "original", error)
+        LOGGER.exception(
+            "Command %s failed",
+            ctx.command,
+            exc_info=(type(original), original, original.__traceback__),
+        )
+        await ctx.reply(
+            embed=_error_embed("That command failed. Check the Railway logs for the exact traceback."),
+            mention_author=False,
+        )
 
 
 def _combat_summary(skills: dict) -> str:
