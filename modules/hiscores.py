@@ -4,17 +4,13 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
 
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_BASE_URLS = [
-    "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws",
-    "https://services.runescape.com/m=hiscore_oldschool/index_lite.ws",
-]
+WISE_OLD_MAN_BASE_URL = "https://api.wiseoldman.net/v2"
 
 SKILLS = [
     "overall",
@@ -153,35 +149,49 @@ BOSS_ALIASES = {
     "sara": "commander_zilyana",
 }
 
+WOM_SKILL_KEYS = {
+    "runecraft": "runecrafting",
+}
 
-@dataclass(slots=True)
-class HiscoresEntry:
-    rank: int
-    level: int | None
-    xp_or_score: int
+WOM_ACTIVITY_KEYS = {
+    "clue_all": "clue_scrolls_all",
+    "clue_beginner": "clue_scrolls_beginner",
+    "clue_easy": "clue_scrolls_easy",
+    "clue_medium": "clue_scrolls_medium",
+    "clue_hard": "clue_scrolls_hard",
+    "clue_elite": "clue_scrolls_elite",
+    "clue_master": "clue_scrolls_master",
+    "rifts_closed": "guardians_of_the_rift",
+}
+
+WOM_BOSS_KEYS = {
+    "the_corrupted_gauntlet": "corrupted_gauntlet",
+}
 
 
 class HiscoresClient:
-    """OSRS hiscores client using one shared aiohttp session."""
+    """Wise Old Man client using one shared aiohttp session.
+
+    The rest of the bot expects a Jagex-hiscores-like dictionary. This class
+    asks Wise Old Man to track/update a player, then normalizes the latest
+    snapshot into the bot's existing skills/activities/bosses shape.
+    """
 
     def __init__(self) -> None:
         self.session: aiohttp.ClientSession | None = None
         self._request_lock = asyncio.Lock()
         self._last_request_at = 0.0
-        self.min_interval_seconds = float(os.getenv("HISCORES_MIN_INTERVAL_SECONDS", "5"))
-        self.base_urls = _load_base_urls()
+        self.min_interval_seconds = float(os.getenv("WOM_MIN_INTERVAL_SECONDS", "2"))
+        self.base_url = os.getenv("WOM_BASE_URL", WISE_OLD_MAN_BASE_URL).rstrip("/")
 
     async def __aenter__(self) -> "HiscoresClient":
         if not self.session:
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=30)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 headers={
-                    "Accept": "text/plain,*/*;q=0.8",
-                    "User-Agent": (
-                        "Mozilla/5.0 (compatible; OSRS-Discord-Bot/1.0; "
-                        "+https://github.com/discord.py)"
-                    ),
+                    "Accept": "application/json",
+                    "User-Agent": "OSRS-Discord-Bot/1.0 using WiseOldMan API",
                 },
             )
         return self
@@ -200,102 +210,94 @@ class HiscoresClient:
         return self.session
 
     async def fetch_player(self, rsn: str) -> dict[str, Any]:
-        """Fetch and parse all lite hiscores in a single request."""
-
         clean_rsn = rsn.strip()
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                text = await self._fetch_text(clean_rsn)
-                return self.parse_lite_response(clean_rsn, text)
+                payload = await self._track_player(clean_rsn)
+                return self.parse_wom_player(clean_rsn, payload)
             except TemporaryHiscoresError as error:
                 last_error = error
                 if attempt == 2:
                     break
-                await asyncio.sleep(10 * (attempt + 1))
+                await asyncio.sleep(5 * (attempt + 1))
 
         if last_error:
             raise last_error
-        raise RuntimeError("Hiscores request failed unexpectedly")
+        raise RuntimeError("Wise Old Man request failed unexpectedly")
 
-    async def _fetch_text(self, rsn: str) -> str:
+    async def _track_player(self, rsn: str) -> dict[str, Any]:
         async with self._request_lock:
             elapsed = time.monotonic() - self._last_request_at
             if elapsed < self.min_interval_seconds:
                 await asyncio.sleep(self.min_interval_seconds - elapsed)
 
-            errors: list[str] = []
-            for base_url in self.base_urls:
-                async with self._session().get(base_url, params={"player": rsn}) as response:
-                    self._last_request_at = time.monotonic()
-                    if response.status == 404:
-                        raise ValueError(f"No hiscores found for RSN '{rsn}'")
-                    response.raise_for_status()
-                    text = await response.text()
-
-                if not _looks_like_html(text):
-                    return text
-
-                errors.append(base_url)
-
-            raise TemporaryHiscoresError(
-                "OSRS hiscores returned HTML instead of stats from every configured endpoint "
-                f"({', '.join(errors)}). Railway's IP is likely being served a block/error page."
-            )
+            url = f"{self.base_url}/players/track"
+            async with self._session().post(url, json={"username": rsn}) as response:
+                self._last_request_at = time.monotonic()
+                if response.status == 404:
+                    raise ValueError(f"No Wise Old Man player found for RSN '{rsn}'")
+                if response.status == 429:
+                    raise TemporaryHiscoresError("Wise Old Man rate limited the bot. Try again shortly.")
+                if response.status >= 500:
+                    raise TemporaryHiscoresError(f"Wise Old Man returned HTTP {response.status}. Try again shortly.")
+                if response.status >= 400:
+                    details = await response.text()
+                    raise ValueError(f"Wise Old Man rejected RSN '{rsn}': {details[:200]}")
+                return await response.json()
 
     @staticmethod
-    def parse_lite_response(rsn: str, text: str) -> dict[str, Any]:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if not lines:
-            raise ValueError(f"Empty hiscores response for RSN '{rsn}'")
-        if _looks_like_html(text):
-            raise TemporaryHiscoresError(
-                "OSRS hiscores returned an HTML page instead of stats. "
-                "This is usually a temporary Jagex block, rate limit, or hiscores outage."
-            )
-        if "," not in lines[0]:
-            raise ValueError(f"Unexpected hiscores response for RSN '{rsn}': {lines[0][:80]}")
+    def parse_wom_player(rsn: str, payload: dict[str, Any]) -> dict[str, Any]:
+        snapshot = payload.get("latestSnapshot") or payload.get("latest_snapshot")
+        if not snapshot and payload.get("data"):
+            snapshot = payload
+        if not snapshot or "data" not in snapshot:
+            raise ValueError(f"Wise Old Man response did not include latest stats for RSN '{rsn}'")
 
-        data: dict[str, Any] = {"rsn": rsn, "skills": {}, "activities": {}, "bosses": {}}
+        snapshot_data = snapshot["data"]
+        wom_skills = snapshot_data.get("skills", {})
+        wom_activities = snapshot_data.get("activities", {})
+        wom_bosses = snapshot_data.get("bosses", {})
+        data: dict[str, Any] = {
+            "rsn": payload.get("displayName") or payload.get("username") or rsn,
+            "skills": {},
+            "activities": {},
+            "bosses": {},
+        }
 
-        for name, line in zip(SKILLS, lines[: len(SKILLS)]):
-            rank, level, xp = _parse_csv_ints(line, expected=3)
-            data["skills"][name] = {"rank": rank, "level": level, "xp": xp}
+        for name in SKILLS:
+            metric = wom_skills.get(WOM_SKILL_KEYS.get(name, name), {})
+            data["skills"][name] = {
+                "rank": _int_value(metric.get("rank"), -1),
+                "level": _int_value(metric.get("level"), 1 if name != "overall" else 0),
+                "xp": _int_value(metric.get("experience"), 0),
+            }
 
-        start = len(SKILLS)
-        for name, line in zip(ACTIVITIES, lines[start : start + len(ACTIVITIES)]):
-            rank, score = _parse_csv_ints(line, expected=2)
-            data["activities"][name] = {"rank": rank, "score": score}
+        for name in ACTIVITIES:
+            metric = wom_activities.get(WOM_ACTIVITY_KEYS.get(name, name), {})
+            data["activities"][name] = {
+                "rank": _int_value(metric.get("rank"), -1),
+                "score": _int_value(metric.get("score"), -1),
+            }
 
-        start += len(ACTIVITIES)
-        for name, line in zip(BOSSES, lines[start : start + len(BOSSES)]):
-            rank, score = _parse_csv_ints(line, expected=2)
-            data["bosses"][name] = {"rank": rank, "score": score}
+        for name in BOSSES:
+            metric = wom_bosses.get(WOM_BOSS_KEYS.get(name, name), {})
+            data["bosses"][name] = {
+                "rank": _int_value(metric.get("rank"), -1),
+                "score": _int_value(metric.get("kills", metric.get("score")), -1),
+            }
 
         return data
 
 
-def _parse_csv_ints(line: str, expected: int) -> tuple[int, ...]:
-    values = tuple(int(part) for part in line.split(",")[:expected])
-    if len(values) != expected:
-        raise ValueError(f"Unexpected hiscores line: {line}")
-    return values
-
-
 class TemporaryHiscoresError(ValueError):
-    """Raised when Jagex returns a temporary non-hiscores response."""
+    """Raised when Wise Old Man returns a temporary response."""
 
 
-def _looks_like_html(text: str) -> bool:
-    start = text.lstrip().lower()
-    return start.startswith("<!doctype html") or start.startswith("<html")
-
-
-def _load_base_urls() -> list[str]:
-    raw = os.getenv("HISCORES_BASE_URLS", "").strip()
-    if not raw:
-        return DEFAULT_BASE_URLS
-    return [url.strip() for url in raw.split(",") if url.strip()]
+def _int_value(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    return int(value)
 
 
 def resolve_boss_name(raw: str) -> str | None:
