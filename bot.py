@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -25,6 +26,18 @@ def required_env(name: str) -> str:
     return value
 
 
+def database_path() -> str:
+    explicit_path = os.getenv("DATABASE_PATH")
+    if explicit_path:
+        return explicit_path
+
+    volume_path = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    if volume_path:
+        return str(Path(volume_path) / "osrs_bot.sqlite3")
+
+    return "osrs_bot.sqlite3"
+
+
 async def main() -> None:
     load_dotenv()
     logging.getLogger().setLevel(os.getenv("LOG_LEVEL", "INFO"))
@@ -39,7 +52,8 @@ async def main() -> None:
         help_command=None,
     )
 
-    db = Database(os.getenv("DATABASE_PATH", "osrs_bot.sqlite3"))
+    db = Database(database_path())
+    logging.info("Using SQLite database at %s", db.path)
     await db.connect()
     await db.migrate()
 
