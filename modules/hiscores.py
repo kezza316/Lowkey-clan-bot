@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,6 +163,9 @@ class HiscoresClient:
 
     def __init__(self) -> None:
         self.session: aiohttp.ClientSession | None = None
+        self._request_lock = asyncio.Lock()
+        self._last_request_at = 0.0
+        self.min_interval_seconds = float(os.getenv("HISCORES_MIN_INTERVAL_SECONDS", "5"))
 
     async def __aenter__(self) -> "HiscoresClient":
         if not self.session:
@@ -188,14 +193,33 @@ class HiscoresClient:
         """Fetch and parse all lite hiscores in a single request."""
 
         clean_rsn = rsn.strip()
-        async with self._session().get(BASE_URL, params={"player": clean_rsn}) as response:
-            if response.status == 404:
-                raise ValueError(f"No hiscores found for RSN '{rsn}'")
-            response.raise_for_status()
-            text = await response.text()
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                text = await self._fetch_text(clean_rsn)
+                return self.parse_lite_response(clean_rsn, text)
+            except TemporaryHiscoresError as error:
+                last_error = error
+                if attempt == 2:
+                    break
+                await asyncio.sleep(10 * (attempt + 1))
 
-        await asyncio.sleep(0)  # Let command bursts yield between players.
-        return self.parse_lite_response(clean_rsn, text)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Hiscores request failed unexpectedly")
+
+    async def _fetch_text(self, rsn: str) -> str:
+        async with self._request_lock:
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < self.min_interval_seconds:
+                await asyncio.sleep(self.min_interval_seconds - elapsed)
+
+            async with self._session().get(BASE_URL, params={"player": rsn}) as response:
+                self._last_request_at = time.monotonic()
+                if response.status == 404:
+                    raise ValueError(f"No hiscores found for RSN '{rsn}'")
+                response.raise_for_status()
+                return await response.text()
 
     @staticmethod
     def parse_lite_response(rsn: str, text: str) -> dict[str, Any]:
@@ -203,7 +227,7 @@ class HiscoresClient:
         if not lines:
             raise ValueError(f"Empty hiscores response for RSN '{rsn}'")
         if lines[0].lower().startswith("<!doctype html") or lines[0].lower().startswith("<html"):
-            raise ValueError(
+            raise TemporaryHiscoresError(
                 "OSRS hiscores returned an HTML page instead of stats. "
                 "This is usually a temporary Jagex block, rate limit, or hiscores outage."
             )
@@ -234,6 +258,10 @@ def _parse_csv_ints(line: str, expected: int) -> tuple[int, ...]:
     if len(values) != expected:
         raise ValueError(f"Unexpected hiscores line: {line}")
     return values
+
+
+class TemporaryHiscoresError(ValueError):
+    """Raised when Jagex returns a temporary non-hiscores response."""
 
 
 def resolve_boss_name(raw: str) -> str | None:
