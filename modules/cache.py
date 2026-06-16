@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import discord
@@ -13,6 +14,20 @@ from modules.roles import RoleManager
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class SyncResult:
+    updated: int = 0
+    failed: int = 0
+    errors: list[str] | None = None
+
+    def add_error(self, rsn: str, error: Exception) -> None:
+        self.failed += 1
+        if self.errors is None:
+            self.errors = []
+        if len(self.errors) < 5:
+            self.errors.append(f"{rsn}: {type(error).__name__}: {error}")
 
 
 class StatsCache:
@@ -35,6 +50,14 @@ class StatsCache:
         if self.refresh_loop.is_running():
             self.refresh_loop.cancel()
 
+    async def set_player_and_refresh(self, guild: discord.Guild, discord_id: int, rsn: str) -> dict:
+        # Validate the RSN before saving so bad input never overwrites a player.
+        data = await self.hiscores.fetch_player(rsn)
+        await self.db.upsert_player(discord_id, guild.id, rsn)
+        await self.db.upsert_stats(discord_id, guild.id, rsn.strip(), data)
+        await self.apply_roles(guild, discord_id, rsn, data)
+        return data
+
     async def refresh_player(self, guild: discord.Guild, discord_id: int) -> dict | None:
         player = await self.db.get_player(discord_id, guild.id)
         if not player:
@@ -43,21 +66,24 @@ class StatsCache:
         # One hiscores request per player: parse everything from the lite endpoint.
         data = await self.hiscores.fetch_player(player.rsn)
         await self.db.upsert_stats(player.discord_id, player.guild_id, player.rsn, data)
+        await self.apply_roles(guild, discord_id, player.rsn, data)
+        return data
 
+    async def apply_roles(self, guild: discord.Guild, discord_id: int, rsn: str, data: dict) -> None:
         member = guild.get_member(discord_id)
         if not member:
             try:
                 member = await guild.fetch_member(discord_id)
             except discord.NotFound:
-                LOGGER.info("Stats synced for %s, but the member is no longer in guild %s.", player.rsn, guild.id)
+                LOGGER.info("Stats synced for %s, but the member is no longer in guild %s.", rsn, guild.id)
             except discord.Forbidden:
                 LOGGER.warning(
                     "Stats synced for %s, but Discord would not let the bot fetch the member. "
                     "Enable the Server Members Intent in the Discord Developer Portal.",
-                    player.rsn,
+                    rsn,
                 )
             except discord.HTTPException:
-                LOGGER.exception("Stats synced for %s, but fetching the Discord member failed.", player.rsn)
+                LOGGER.exception("Stats synced for %s, but fetching the Discord member failed.", rsn)
 
         if member and self._roles:
             try:
@@ -66,26 +92,24 @@ class StatsCache:
                 LOGGER.warning(
                     "Stats synced for %s, but role update failed in guild %s. "
                     "Check Manage Roles permission and role hierarchy.",
-                    player.rsn,
+                    rsn,
                     guild.id,
                 )
             except discord.HTTPException:
-                LOGGER.exception("Stats synced for %s, but Discord role update failed.", player.rsn)
-        return data
+                LOGGER.exception("Stats synced for %s, but Discord role update failed.", rsn)
 
-    async def refresh_guild(self, guild: discord.Guild) -> tuple[int, int]:
+    async def refresh_guild(self, guild: discord.Guild) -> SyncResult:
         async with self._lock:
             players = await self.db.list_players(guild.id)
-            ok = 0
-            failed = 0
+            result = SyncResult(errors=[])
             for player in players:
                 try:
                     await self.refresh_player(guild, player.discord_id)
-                    ok += 1
-                except Exception:
-                    failed += 1
+                    result.updated += 1
+                except Exception as error:
+                    result.add_error(player.rsn, error)
                     LOGGER.exception("Failed to refresh %s in guild %s", player.rsn, guild.id)
-            return ok, failed
+            return result
 
     @tasks.loop(minutes=30)
     async def refresh_loop(self) -> None:

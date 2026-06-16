@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord.ext import commands
 
@@ -15,6 +17,9 @@ from modules.leaderboards import (
     total_level,
 )
 from modules.roles import RoleManager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OSRSCommands(commands.Cog):
@@ -33,22 +38,44 @@ class OSRSCommands(commands.Cog):
     @commands.command(name="register")
     @commands.guild_only()
     async def register(self, ctx: commands.Context, *, rsn: str) -> None:
-        await self.db.upsert_player(ctx.author.id, ctx.guild.id, rsn)
-        data = await self.cache.refresh_player(ctx.guild, ctx.author.id)
+        if ctx.message.mentions:
+            await ctx.reply(
+                embed=_error_embed("Use `!forceadd @member rsn` to register another Discord member."),
+                mention_author=False,
+            )
+            return
+
+        data = await self.cache.set_player_and_refresh(ctx.guild, ctx.author.id, rsn)
         embed = discord.Embed(title="Registered", color=discord.Color.green())
         embed.description = f"Linked <@{ctx.author.id}> to **{rsn.strip()}**."
-        if data:
-            total = data["skills"]["overall"]["level"]
-            embed.add_field(name="Total Level", value=f"{total:,}")
+        total = data["skills"]["overall"]["level"]
+        embed.add_field(name="Total Level", value=f"{total:,}")
         await ctx.reply(embed=embed, mention_author=False)
 
     @commands.command(name="stats")
     @commands.guild_only()
-    async def stats(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
-        member = member or ctx.author
+    async def stats(self, ctx: commands.Context, *, target: str | None = None) -> None:
+        member = ctx.author
+        if target:
+            converter = commands.MemberConverter()
+            try:
+                member = await converter.convert(ctx, target)
+            except commands.BadArgument:
+                await ctx.reply(
+                    embed=_error_embed(
+                        "`!stats` shows Discord-linked players. Use `!register your_rsn` first, "
+                        "then run `!stats`, or use `!stats @member`."
+                    ),
+                    mention_author=False,
+                )
+                return
+
         player = await self.db.get_player(member.id, ctx.guild.id)
         if not player:
-            await ctx.reply(embed=_error_embed("That member is not registered."), mention_author=False)
+            message = "You are not registered yet. Use `!register your_rsn` first."
+            if member.id != ctx.author.id:
+                message = "That member is not registered yet."
+            await ctx.reply(embed=_error_embed(message), mention_author=False)
             return
 
         data = await self.db.get_stats(member.id, ctx.guild.id)
@@ -102,8 +129,7 @@ class OSRSCommands(commands.Cog):
     @commands.guild_only()
     @commands.has_permissions(manage_guild=True)
     async def forceadd(self, ctx: commands.Context, member: discord.Member, *, rsn: str) -> None:
-        await self.db.upsert_player(member.id, ctx.guild.id, rsn)
-        await self.cache.refresh_player(ctx.guild, member.id)
+        await self.cache.set_player_and_refresh(ctx.guild, member.id, rsn)
         await ctx.reply(
             embed=_ok_embed("Player Added", f"Linked {member.mention} to **{rsn.strip()}**."),
             mention_author=False,
@@ -121,8 +147,7 @@ class OSRSCommands(commands.Cog):
     @commands.guild_only()
     @commands.has_permissions(manage_guild=True)
     async def setrsn(self, ctx: commands.Context, member: discord.Member, *, rsn: str) -> None:
-        await self.db.upsert_player(member.id, ctx.guild.id, rsn)
-        await self.cache.refresh_player(ctx.guild, member.id)
+        await self.cache.set_player_and_refresh(ctx.guild, member.id, rsn)
         await ctx.reply(
             embed=_ok_embed("RSN Updated", f"Set {member.mention}'s RSN to **{rsn.strip()}**."),
             mention_author=False,
@@ -142,19 +167,25 @@ class OSRSCommands(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def forcesync(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
         if member:
-            await self.cache.refresh_player(ctx.guild, member.id)
-            await ctx.reply(embed=_ok_embed("Sync Complete", f"Synced {member.mention}."), mention_author=False)
+            message = await ctx.reply(embed=_ok_embed("Sync Started", f"Syncing {member.mention}..."), mention_author=False)
+            data = await self.cache.refresh_player(ctx.guild, member.id)
+            if not data:
+                await message.edit(embed=_error_embed(f"{member.mention} is not registered."))
+                return
+            await message.edit(embed=_ok_embed("Sync Complete", f"Synced {member.mention}."))
             return
 
-        ok, failed = await self.cache.refresh_guild(ctx.guild)
-        await ctx.reply(embed=_ok_embed("Sync Complete", f"Updated {ok} players. Failed: {failed}."), mention_author=False)
+        message = await ctx.reply(embed=_ok_embed("Sync Started", "Refreshing all tracked players..."), mention_author=False)
+        result = await self.cache.refresh_guild(ctx.guild)
+        await message.edit(embed=_sync_result_embed(result.updated, result.failed, result.errors))
 
     @commands.command(name="sync")
     @commands.guild_only()
     @commands.has_permissions(manage_guild=True)
     async def sync(self, ctx: commands.Context) -> None:
-        ok, failed = await self.cache.refresh_guild(ctx.guild)
-        await ctx.reply(embed=_ok_embed("Sync Complete", f"Updated {ok} players. Failed: {failed}."), mention_author=False)
+        message = await ctx.reply(embed=_ok_embed("Sync Started", "Refreshing all tracked players..."), mention_author=False)
+        result = await self.cache.refresh_guild(ctx.guild)
+        await message.edit(embed=_sync_result_embed(result.updated, result.failed, result.errors))
 
     @register.error
     @bosslb.error
@@ -166,13 +197,29 @@ class OSRSCommands(commands.Cog):
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        if ctx.command and ctx.command.has_error_handler():
+            return
+
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply(embed=_error_embed("You need Manage Server permission for that command."), mention_author=False)
+            return
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(embed=_error_embed(f"Missing argument: `{error.param.name}`"), mention_author=False)
             return
         if isinstance(error, commands.BadArgument):
             await ctx.reply(embed=_error_embed("I could not understand that argument."), mention_author=False)
             return
-        raise error
+
+        original = getattr(error, "original", error)
+        LOGGER.exception(
+            "Command %s failed",
+            ctx.command,
+            exc_info=(type(original), original, original.__traceback__),
+        )
+        await ctx.reply(
+            embed=_error_embed("That command failed. Check the Railway logs for the exact traceback."),
+            mention_author=False,
+        )
 
 
 def _combat_summary(skills: dict) -> str:
@@ -187,4 +234,12 @@ def _error_embed(message: str) -> discord.Embed:
 
 def _ok_embed(title: str, message: str) -> discord.Embed:
     embed = discord.Embed(title=title, description=message, color=discord.Color.green())
+    return embed
+
+
+def _sync_result_embed(updated: int, failed: int, errors: list[str] | None) -> discord.Embed:
+    embed = _ok_embed("Sync Complete", f"Updated {updated} players. Failed: {failed}.")
+    if failed and errors:
+        embed.color = discord.Color.orange()
+        embed.add_field(name="First Errors", value="\n".join(f"`{error}`" for error in errors), inline=False)
     return embed

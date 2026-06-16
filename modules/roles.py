@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 
 import discord
 
 from modules.database import Database
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,24 @@ class RoleManager:
         role_to_add = None
         if target and target.role_id not in current_ids:
             role_to_add = member.guild.get_role(target.role_id)
+            if not role_to_add:
+                LOGGER.warning(
+                    "Progression role ID %s is configured but does not exist in guild %s.",
+                    target.role_id,
+                    member.guild.id,
+                )
+
+        bot_member = member.guild.me
+        planned_roles = [*roles_to_remove, *([role_to_add] if role_to_add else [])]
+        if bot_member:
+            unmanageable = [role for role in planned_roles if role >= bot_member.top_role]
+            if unmanageable:
+                LOGGER.warning(
+                    "Cannot update progression role for %s because the bot role is not above: %s",
+                    member.id,
+                    ", ".join(role.name for role in unmanageable),
+                )
+                return False
 
         # Avoid no-op role edits so Discord audit logs stay clean.
         if not roles_to_remove and not role_to_add:
