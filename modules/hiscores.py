@@ -11,7 +11,10 @@ import aiohttp
 
 
 LOGGER = logging.getLogger(__name__)
-BASE_URL = "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws"
+DEFAULT_BASE_URLS = [
+    "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws",
+    "https://services.runescape.com/m=hiscore_oldschool/index_lite.ws",
+]
 
 SKILLS = [
     "overall",
@@ -166,13 +169,20 @@ class HiscoresClient:
         self._request_lock = asyncio.Lock()
         self._last_request_at = 0.0
         self.min_interval_seconds = float(os.getenv("HISCORES_MIN_INTERVAL_SECONDS", "5"))
+        self.base_urls = _load_base_urls()
 
     async def __aenter__(self) -> "HiscoresClient":
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=20)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
-                headers={"User-Agent": "OSRS-Discord-Bot/1.0"},
+                headers={
+                    "Accept": "text/plain,*/*;q=0.8",
+                    "User-Agent": (
+                        "Mozilla/5.0 (compatible; OSRS-Discord-Bot/1.0; "
+                        "+https://github.com/discord.py)"
+                    ),
+                },
             )
         return self
 
@@ -214,19 +224,31 @@ class HiscoresClient:
             if elapsed < self.min_interval_seconds:
                 await asyncio.sleep(self.min_interval_seconds - elapsed)
 
-            async with self._session().get(BASE_URL, params={"player": rsn}) as response:
-                self._last_request_at = time.monotonic()
-                if response.status == 404:
-                    raise ValueError(f"No hiscores found for RSN '{rsn}'")
-                response.raise_for_status()
-                return await response.text()
+            errors: list[str] = []
+            for base_url in self.base_urls:
+                async with self._session().get(base_url, params={"player": rsn}) as response:
+                    self._last_request_at = time.monotonic()
+                    if response.status == 404:
+                        raise ValueError(f"No hiscores found for RSN '{rsn}'")
+                    response.raise_for_status()
+                    text = await response.text()
+
+                if not _looks_like_html(text):
+                    return text
+
+                errors.append(base_url)
+
+            raise TemporaryHiscoresError(
+                "OSRS hiscores returned HTML instead of stats from every configured endpoint "
+                f"({', '.join(errors)}). Railway's IP is likely being served a block/error page."
+            )
 
     @staticmethod
     def parse_lite_response(rsn: str, text: str) -> dict[str, Any]:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             raise ValueError(f"Empty hiscores response for RSN '{rsn}'")
-        if lines[0].lower().startswith("<!doctype html") or lines[0].lower().startswith("<html"):
+        if _looks_like_html(text):
             raise TemporaryHiscoresError(
                 "OSRS hiscores returned an HTML page instead of stats. "
                 "This is usually a temporary Jagex block, rate limit, or hiscores outage."
@@ -262,6 +284,18 @@ def _parse_csv_ints(line: str, expected: int) -> tuple[int, ...]:
 
 class TemporaryHiscoresError(ValueError):
     """Raised when Jagex returns a temporary non-hiscores response."""
+
+
+def _looks_like_html(text: str) -> bool:
+    start = text.lstrip().lower()
+    return start.startswith("<!doctype html") or start.startswith("<html")
+
+
+def _load_base_urls() -> list[str]:
+    raw = os.getenv("HISCORES_BASE_URLS", "").strip()
+    if not raw:
+        return DEFAULT_BASE_URLS
+    return [url.strip() for url in raw.split(",") if url.strip()]
 
 
 def resolve_boss_name(raw: str) -> str | None:
