@@ -4,13 +4,12 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import aiohttp
 
 
 LOGGER = logging.getLogger(__name__)
-BASE_URL = "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws?player={player}"
+BASE_URL = "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws"
 
 SKILLS = [
     "overall",
@@ -188,19 +187,29 @@ class HiscoresClient:
     async def fetch_player(self, rsn: str) -> dict[str, Any]:
         """Fetch and parse all lite hiscores in a single request."""
 
-        url = BASE_URL.format(player=quote(rsn.strip()))
-        async with self._session().get(url) as response:
+        clean_rsn = rsn.strip()
+        async with self._session().get(BASE_URL, params={"player": clean_rsn}) as response:
             if response.status == 404:
                 raise ValueError(f"No hiscores found for RSN '{rsn}'")
             response.raise_for_status()
             text = await response.text()
 
         await asyncio.sleep(0)  # Let command bursts yield between players.
-        return self.parse_lite_response(rsn, text)
+        return self.parse_lite_response(clean_rsn, text)
 
     @staticmethod
     def parse_lite_response(rsn: str, text: str) -> dict[str, Any]:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError(f"Empty hiscores response for RSN '{rsn}'")
+        if lines[0].lower().startswith("<!doctype html") or lines[0].lower().startswith("<html"):
+            raise ValueError(
+                "OSRS hiscores returned an HTML page instead of stats. "
+                "This is usually a temporary Jagex block, rate limit, or hiscores outage."
+            )
+        if "," not in lines[0]:
+            raise ValueError(f"Unexpected hiscores response for RSN '{rsn}': {lines[0][:80]}")
+
         data: dict[str, Any] = {"rsn": rsn, "skills": {}, "activities": {}, "bosses": {}}
 
         for name, line in zip(SKILLS, lines[: len(SKILLS)]):
